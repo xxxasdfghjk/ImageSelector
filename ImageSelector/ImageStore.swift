@@ -8,6 +8,7 @@ class ImageStore: ObservableObject {
 
     private var folderURL: URL?
     private var saveCancellable: AnyCancellable?
+    private let watcher = FolderWatcher()
     @Published var lastGroupMoveDelta: Int = 1  // 最後の移動方向（正=下、負=上）
 
     // MARK: - フォルダ読み込み
@@ -55,7 +56,66 @@ class ImageStore: ObservableObject {
 
             // グループのマーク変更を監視して自動保存
             self.observeMarkChanges()
+
+            // フォルダの変化をリアルタイム監視
+            self.watcher.start(url: url) { [weak self] in
+                guard let self, let url = self.folderURL else { return }
+                print("[ImageStore] フォルダ変化を検知、リロード: \(url.lastPathComponent)")
+                self.reloadFolder(url: url)
+            }
         }
+    }
+
+    /// マーク情報を保持したままファイル一覧だけ更新する
+    private func reloadFolder(url: URL) {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(
+            at: url, includingPropertiesForKeys: nil
+        ) else { return }
+
+        let items = files.compactMap { Parser.parse(url: $0) }
+        let grouped = Dictionary(grouping: items) { $0.groupId }
+        let savedMarks = MarkStore.load(folderURL: url)
+
+        // 既存グループのマーク情報を保持するため現在の状態を退避
+        var existingMarks: [String: ImageMark] = [:]
+        for group in groups {
+            for item in group.images where item.mark != .none {
+                existingMarks[item.url.lastPathComponent] = item.mark
+            }
+        }
+
+        let newGroups = grouped.map { entry -> ImageGroup in
+            let key = entry.key
+            let rawItems = entry.value
+            let sorted = rawItems
+                .sorted { $0.timestamp < $1.timestamp }
+                .map { item -> ImageItem in
+                    var restored = item
+                    // メモリ上のマーク → 保存済みマークの順で優先
+                    restored.mark = existingMarks[item.url.lastPathComponent]
+                        ?? savedMarks[item.url.lastPathComponent]
+                        ?? .none
+                    return restored
+                }
+            return ImageGroup(id: key, images: sorted, prompt: rawItems[0].prompt)
+        }
+
+        let sortedGroups = newGroups.sorted { $0.id < $1.id }
+
+        // 選択中グループを維持
+        let prevSelectedID = self.selectedGroup?.id
+        let prevFocusedURL = self.selectedGroup?.focusedImage?.url
+
+        self.groups = sortedGroups
+        self.selectedGroup = sortedGroups.first { $0.id == prevSelectedID } ?? sortedGroups.first
+        if let focusURL = prevFocusedURL {
+            self.selectedGroup?.focusedImage = self.selectedGroup?.images.first { $0.url == focusURL }
+                ?? self.selectedGroup?.images.first
+        } else {
+            self.selectedGroup?.focusedImage = self.selectedGroup?.images.first
+        }
+        self.observeMarkChanges()
     }
 
     // MARK: - マーク変更の監視と自動保存
