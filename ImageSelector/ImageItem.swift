@@ -1,8 +1,17 @@
-//
-//  ImageItem.swift
-//  ImageSelector
-//
-//  Created by Makita Naoki on 2026/03/18.
-//
-
 import Foundation
+ 
+enum ImageMark: String, Codable {
+    case none
+    case red
+    case blue
+}
+ 
+struct ImageItem: Identifiable, Hashable {
+    let id = UUID()
+    let url: URL
+    let groupId: String
+    let prompt: String
+    let timestamp: Date
+    var mark: ImageMark = .none
+}
+ 

@@ -9,9 +9,11 @@ import SwiftUI
 
 @main
 struct ImageSelectorApp: App {
+    @StateObject private var store = ImageStore()
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView().environmentObject(store)
         }
     }
 }

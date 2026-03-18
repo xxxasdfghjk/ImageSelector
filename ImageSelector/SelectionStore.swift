@@ -1,8 +1,7 @@
-//
-//  SelectionStore.swift
-//  ImageSelector
-//
-//  Created by Makita Naoki on 2026/03/18.
-//
-
 import Foundation
+
+struct SelectionStore {
+    static func save(groups: [ImageGroup], to url: URL) {
+
+    }
+}

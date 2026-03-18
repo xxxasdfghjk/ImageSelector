@@ -1,24 +1,35 @@
-//
-//  ContentView.swift
-//  ImageSelector
-//
-//  Created by Makita Naoki on 2026/03/18.
-//
-
 import SwiftUI
+import Combine
 
 struct ContentView: View {
-    var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
-        }
-        .padding()
-    }
-}
+    @EnvironmentObject var store: ImageStore
 
-#Preview {
-    ContentView()
+    var body: some View {
+        NavigationSplitView {
+            SidebarView().environmentObject(store)
+        } detail: {
+            if let group = store.selectedGroup {
+                ImageGridView(group: group)
+            } else {
+                Text("フォルダを選択してください")
+            }
+        }
+        .toolbar {
+            Button("フォルダ選択") {
+                selectFolder()
+            }
+        }
+    }
+
+    func selectFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+
+        if panel.runModal() == .OK {
+            if let url = panel.url {
+                store.loadFolder(url: url)
+            }
+        }
+    }
 }
