@@ -77,6 +77,7 @@ struct SidebarView: View {
 private struct GroupListView: View {
     @EnvironmentObject var store: ImageStore
     @State private var listHeight: CGFloat = 0
+    @State private var scrollOffset: Int = 0  // 現在の先頭アイテムのインデックス概算
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -136,22 +137,31 @@ private struct GroupListView: View {
               let selectedIndex = store.groups.firstIndex(where: { $0.id == store.selectedGroup?.id })
         else { return }
 
-        // 1行あたりの高さを概算（行の実測が難しいためRowの実装から推算）
         let rowHeight: CGFloat = 36
-        let visibleCount = max(1, Int(listHeight / rowHeight))
-
-        // スクロール発動のしきい値（上下30%）
-        let triggerZone = max(1, Int(Double(visibleCount) * 0.3))
+        let visibleCount = max(3, Int(listHeight / rowHeight))
+        // デッドゾーン: 上20% / 下20% を超えたときだけスクロール
+        let triggerZone = max(1, Int(Double(visibleCount) * 0.2))
 
         if delta < 0 {
-            // 上移動: selectedIndex が上端から triggerZone 以内に入ったらスクロール
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                proxy.scrollTo(store.groups[selectedIndex].id, anchor: UnitPoint(x: 0.5, y: 0.3))
+            // 上移動: 選択行が「現在の先頭 + triggerZone」より上に行ったらスクロール
+            let topThreshold = scrollOffset + triggerZone
+            if selectedIndex < topThreshold {
+                let newTop = max(0, selectedIndex - triggerZone)
+                let anchorIndex = min(newTop + visibleCount - 1, store.groups.count - 1)
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+                    proxy.scrollTo(store.groups[newTop].id, anchor: .top)
+                }
+                scrollOffset = newTop
             }
         } else {
-            // 下移動: selectedIndex が下端から triggerZone 以内に入ったらスクロール
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                proxy.scrollTo(store.groups[selectedIndex].id, anchor: UnitPoint(x: 0.5, y: 0.7))
+            // 下移動: 選択行が「現在の末尾 - triggerZone」より下に行ったらスクロール
+            let bottomThreshold = scrollOffset + visibleCount - 1 - triggerZone
+            if selectedIndex > bottomThreshold {
+                let newTop = max(0, selectedIndex - visibleCount + 1 + triggerZone)
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+                    proxy.scrollTo(store.groups[min(newTop + visibleCount - 1, store.groups.count - 1)].id, anchor: .bottom)
+                }
+                scrollOffset = newTop
             }
         }
     }
