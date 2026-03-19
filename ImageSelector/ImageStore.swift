@@ -6,7 +6,9 @@ enum ActivePanel { case folder, group }
 
 class ImageStore: ObservableObject {
     @Published var groups: [ImageGroup] = []
-    @Published var selectedGroup: ImageGroup?
+    @Published var selectedGroup: ImageGroup? {
+        didSet { SessionStore.saveSelectedGroup(id: selectedGroup?.id) }
+    }
 
     private var folderURL: URL?
     private var saveCancellable: AnyCancellable?
@@ -16,11 +18,13 @@ class ImageStore: ObservableObject {
 
     // MARK: - フォルダ読み込み
 
-    func loadFolder(url: URL) {
+    func loadFolder(url: URL, completion: (() -> Void)? = nil) {
         // 以前のスコープを解放してから新しいフォルダを登録
         folderURL?.stopAccessingSecurityScopedResource()
         _ = url.startAccessingSecurityScopedResource()
         folderURL = url
+        // 選択フォルダを永続化
+        SessionStore.saveSelectedFolder(url: url)
 
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(
@@ -67,6 +71,9 @@ class ImageStore: ObservableObject {
                 print("[ImageStore] フォルダ変化を検知、リロード: \(url.lastPathComponent)")
                 self.reloadFolder(url: url)
             }
+
+            // ロード完了コールバック
+            completion?()
         }
     }
 
@@ -81,7 +88,7 @@ class ImageStore: ObservableObject {
         let grouped = Dictionary(grouping: items) { $0.groupId }
         let savedMarks = MarkStore.load(folderURL: url)
 
-        // 既存グループのマーク情報を保持するため現在の状態を退避
+        // 既存マークをメモリから退避
         var existingMarks: [String: ImageMark] = [:]
         for group in groups {
             for item in group.images where item.mark != .none {
@@ -89,37 +96,67 @@ class ImageStore: ObservableObject {
             }
         }
 
-        let newGroups = grouped.map { entry -> ImageGroup in
-            let key = entry.key
-            let rawItems = entry.value
+        // 既存グループのIDセット
+        let existingIDs = Set(groups.map { $0.id })
+        let newIDs = Set(grouped.keys)
+
+        // ① 既存グループは images だけ更新（オブジェクト維持でちらつき防止）
+        for group in groups {
+            guard let rawItems = grouped[group.id] else { continue }
             let sorted = rawItems
                 .sorted { $0.timestamp < $1.timestamp }
                 .map { item -> ImageItem in
-                    var restored = item
-                    // メモリ上のマーク → 保存済みマークの順で優先
-                    restored.mark = existingMarks[item.url.lastPathComponent]
+                    var r = item
+                    r.mark = existingMarks[item.url.lastPathComponent]
                         ?? savedMarks[item.url.lastPathComponent]
                         ?? .none
-                    return restored
+                    return r
+                }
+            // 画像リストに変化があるときだけ更新
+            if group.images.map { $0.url } != sorted.map { $0.url } {
+                group.images = sorted
+            }
+        }
+
+        // ② 追加されたグループだけ末尾に足す
+        let addedIDs = newIDs.subtracting(existingIDs)
+        let addedGroups: [ImageGroup] = addedIDs.compactMap { key in
+            guard let rawItems = grouped[key] else { return nil }
+            let sorted = rawItems
+                .sorted { $0.timestamp < $1.timestamp }
+                .map { item -> ImageItem in
+                    var r = item
+                    r.mark = existingMarks[item.url.lastPathComponent]
+                        ?? savedMarks[item.url.lastPathComponent]
+                        ?? .none
+                    return r
                 }
             return ImageGroup(id: key, images: sorted, prompt: rawItems[0].prompt)
         }
 
-        let sortedGroups = newGroups.sorted { $0.id < $1.id }
+        // ③ 削除されたグループを除去
+        let removedIDs = existingIDs.subtracting(newIDs)
 
-        // 選択中グループを維持
-        let prevSelectedID = self.selectedGroup?.id
-        let prevFocusedURL = self.selectedGroup?.focusedImage?.url
-
-        self.groups = sortedGroups
-        self.selectedGroup = sortedGroups.first { $0.id == prevSelectedID } ?? sortedGroups.first
-        if let focusURL = prevFocusedURL {
-            self.selectedGroup?.focusedImage = self.selectedGroup?.images.first { $0.url == focusURL }
-                ?? self.selectedGroup?.images.first
-        } else {
-            self.selectedGroup?.focusedImage = self.selectedGroup?.images.first
+        if !addedGroups.isEmpty || !removedIDs.isEmpty {
+            var updated = groups.filter { !removedIDs.contains($0.id) }
+            updated.append(contentsOf: addedGroups)
+            updated.sort { $0.id < $1.id }
+            groups = updated
         }
-        self.observeMarkChanges()
+
+        // 選択中グループ・フォーカス画像を維持
+        if let prevSelectedID = selectedGroup?.id,
+           let still = groups.first(where: { $0.id == prevSelectedID }) {
+            selectedGroup = still
+            if let focusURL = still.focusedImage?.url {
+                still.focusedImage = still.images.first { $0.url == focusURL } ?? still.images.first
+            }
+        } else {
+            selectedGroup = groups.first
+            selectedGroup?.focusedImage = selectedGroup?.images.first
+        }
+
+        observeMarkChanges()
     }
 
     // MARK: - マーク変更の監視と自動保存

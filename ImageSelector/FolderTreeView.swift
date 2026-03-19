@@ -32,7 +32,7 @@ struct FolderTreeView: View {
                         selectedFolder = url
                         store.loadFolder(url: url)
                         store.activePanel = .folder
-                        withAnimation { proxy.scrollTo(url, anchor: .center) }
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) { proxy.scrollTo(url, anchor: .center) }
                     }
                 )
             )
@@ -173,7 +173,7 @@ private struct FolderRowView: View {
 
                 // 展開矢印
                 Button {
-                    withAnimation(.easeInOut(duration: 0.15)) {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
                         node.isExpanded.toggle()
                         if node.isExpanded { node.loadChildren() }
                     }

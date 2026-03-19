@@ -127,20 +127,21 @@ private struct GroupListView: View {
     }
 
     private func scrollIfNeeded(proxy: ScrollViewProxy) {
-        guard store.lastGroupMoveDelta != 0,
+        let delta = store.lastGroupMoveDelta
+        guard delta != 0,
               let selectedIndex = store.groups.firstIndex(where: { $0.id == store.selectedGroup?.id }),
               !visibleRange.isEmpty else { return }
 
-        let total = visibleRange.count
+        let total      = visibleRange.count
         let topEdge    = visibleRange.lowerBound + Int(Double(total) * 0.3)
         let bottomEdge = visibleRange.upperBound - Int(Double(total) * 0.3) - 1
 
-        if store.lastGroupMoveDelta < 0, selectedIndex <= topEdge {
-            withAnimation(.easeInOut(duration: 0.15)) {
+        if delta < 0, selectedIndex <= topEdge {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
                 proxy.scrollTo(store.groups[selectedIndex].id, anchor: UnitPoint(x: 0.5, y: 0.3))
             }
-        } else if store.lastGroupMoveDelta > 0, selectedIndex >= bottomEdge {
-            withAnimation(.easeInOut(duration: 0.15)) {
+        } else if delta > 0, selectedIndex >= bottomEdge {
+            withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
                 proxy.scrollTo(store.groups[selectedIndex].id, anchor: UnitPoint(x: 0.5, y: 0.7))
             }
         }

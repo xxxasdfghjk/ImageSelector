@@ -66,3 +66,31 @@ final class FolderNode: ObservableObject, Identifiable {
             .contains { exts.contains($0.pathExtension.lowercased()) }
     }
 }
+
+extension FolderNode {
+    /// 展開済みノードのURLを再帰的に収集
+    func collectExpanded() -> [URL] {
+        guard isExpanded else { return [] }
+        var result = [url]
+        for child in children ?? [] {
+            result += child.collectExpanded()
+        }
+        return result
+    }
+
+    /// 保存された展開パスに従って再帰的に展開
+    func restoreExpanded(paths: Set<String>, completion: @escaping () -> Void) {
+        guard paths.contains(url.path) else {
+            completion()
+            return
+        }
+        loadChildren(expandAfterLoad: true)
+        // 子のロード完了を待って再帰
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            for child in self.children ?? [] {
+                child.restoreExpanded(paths: paths) {}
+            }
+            completion()
+        }
+    }
+}
