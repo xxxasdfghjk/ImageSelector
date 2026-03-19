@@ -111,7 +111,10 @@ struct ImageGridView: View {
 
     // true を返すとイベントを消費（ビープなし）、false で素通し
     private func handleKeyEvent(_ event: NSEvent) -> Bool {
-        // Ctrl+Cmd+C: 赤マーク済みグループIDをクリップボードへ
+        // フォルダツリーがアクティブなときは全キーを素通し
+        guard store.activePanel != .folder else { return false }
+
+        // Cmd+Shift+C: 赤マーク済みグループIDをクリップボードへ
         let cmdShift: NSEvent.ModifierFlags = [.shift, .command]
         if event.keyCode == 8 && event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(cmdShift) {
             let ids = store.groups
@@ -124,15 +127,15 @@ struct ImageGridView: View {
             return true  // Cmd+Shift+C
         }
         switch event.keyCode {
-        case 18: store.setMark(.red);         return true  // 1
-        case 19: store.setMark(.none);        return true  // 2
-        case 20: store.setMark(.blue);        return true  // 3
-        case 123: store.moveFocus(by: -1);  return true  // ←
-        case 124: store.moveFocus(by:  1);  return true  // →
-        case 125: store.moveGroup(by:  1);  return true  // ↓
-        case 126: store.moveGroup(by: -1);  return true  // ↑
-        case 45:  store.jumpToNextUnmarked();  return true  // n
-        case 46:  presentMovePanel();             return true  // m
+        case 18: store.setMark(.red);           return true  // 1
+        case 19: store.setMark(.none);          return true  // 2
+        case 20: store.setMark(.blue);          return true  // 3
+        case 123: store.moveFocus(by: -1);      return true  // ←
+        case 124: store.moveFocus(by:  1);      return true  // →
+        case 125: store.moveGroup(by:  1);      return true  // ↓
+        case 126: store.moveGroup(by: -1);      return true  // ↑
+        case 45:  store.jumpToNextUnmarked();   return true  // n
+        case 46:  presentMovePanel();           return true  // m
         default: return false
         }
     }

@@ -2,6 +2,8 @@ import Foundation
 import SwiftUI
 import Combine
 
+enum ActivePanel { case folder, group }
+
 class ImageStore: ObservableObject {
     @Published var groups: [ImageGroup] = []
     @Published var selectedGroup: ImageGroup?
@@ -10,6 +12,7 @@ class ImageStore: ObservableObject {
     private var saveCancellable: AnyCancellable?
     private let watcher = FolderWatcher()
     @Published var lastGroupMoveDelta: Int = 1  // 最後の移動方向（正=下、負=上）
+    @Published var activePanel: ActivePanel = .folder  // フォーカス中のパネル
 
     // MARK: - フォルダ読み込み
 
@@ -53,6 +56,7 @@ class ImageStore: ObservableObject {
             self.groups = sortedGroups
             self.selectedGroup = sortedGroups.first
             self.selectedGroup?.focusedImage = sortedGroups.first?.images.first
+            // activePanel はここでは変更しない（フォルダツリー側のフォーカスを維持）
 
             // グループのマーク変更を監視して自動保存
             self.observeMarkChanges()
@@ -157,6 +161,7 @@ class ImageStore: ObservableObject {
     func moveGroup(by delta: Int) {
         guard !groups.isEmpty else { return }
         lastGroupMoveDelta = delta
+        activePanel = .group
         let current = selectedGroup.flatMap { g in groups.firstIndex(where: { $0.id == g.id }) } ?? 0
         let next = max(0, min(groups.count - 1, current + delta))
         selectedGroup = groups[next]
@@ -246,5 +251,11 @@ extension ImageStore {
             .joined(separator: ",")
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(ids, forType: .string)
+    }
+}
+
+extension ImageStore {
+    func togglePanel() {
+        activePanel = activePanel == .folder ? .group : .folder
     }
 }

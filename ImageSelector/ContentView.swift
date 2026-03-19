@@ -15,7 +15,6 @@ struct ContentView: View {
 
                 Divider()
 
-                // ルートフォルダ変更ボタン
                 Button {
                     selectRootFolder()
                 } label: {
@@ -27,12 +26,20 @@ struct ContentView: View {
                 .foregroundColor(.accentColor)
                 .padding(10)
             }
+            .overlay(
+                RoundedRectangle(cornerRadius: 0)
+                    .strokeBorder(Color.accentColor.opacity(store.activePanel == .folder ? 0.6 : 0), lineWidth: 2)
+            )
             .navigationSplitViewColumnWidth(min: 180, ideal: 220)
 
         } content: {
             // ── カラム2: グループリスト（既存 SidebarView）──
             SidebarView()
                 .environmentObject(store)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 0)
+                        .strokeBorder(Color.accentColor.opacity(store.activePanel == .group ? 0.6 : 0), lineWidth: 2)
+                )
                 .navigationSplitViewColumnWidth(min: 160, ideal: 200)
 
         } detail: {
@@ -53,6 +60,10 @@ struct ContentView: View {
         .onAppear {
             loadDefaultRoot()
         }
+        .background(
+            TabKeyMonitor { store.togglePanel() }
+        )
+
     }
 
     // MARK: - 初期ルート（~/Downloads）
@@ -99,5 +110,35 @@ struct ContentView: View {
         selectedFolder = nil
         store.groups = []
         store.selectedGroup = nil
+    }
+}
+
+// MARK: - Tab キーでパネル切り替え
+
+private struct TabKeyMonitor: NSViewRepresentable {
+    var onTab: () -> Void
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.onTab = onTab
+    }
+    func makeCoordinator() -> Coordinator { Coordinator(onTab: onTab) }
+
+    class Coordinator {
+        var onTab: () -> Void
+        var monitor: Any?
+
+        init(onTab: @escaping () -> Void) {
+            self.onTab = onTab
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                // keyCode 48 = Tab、修飾キーなし
+                if event.keyCode == 48 && event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty {
+                    self?.onTab()
+                    return nil
+                }
+                return event
+            }
+        }
+        deinit { if let m = monitor { NSEvent.removeMonitor(m) } }
     }
 }

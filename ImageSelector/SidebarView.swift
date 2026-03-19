@@ -5,114 +5,47 @@ struct SidebarView: View {
     @EnvironmentObject var store: ImageStore
     @State private var showToast = false
     @State private var toastMessage = ""
-    @State private var visibleRange: Range<Int> = 0..<0
+
+    private var hasRedMarked: Bool { store.groups.contains { $0.hasRedMark } }
 
     var body: some View {
         VStack(spacing: 0) {
-            ScrollViewReader { proxy in
-            List {
-                ForEach(Array(store.groups.enumerated()), id: \.element.id) { index, group in
-                    GroupRow(group: group, isSelected: store.selectedGroup?.id == group.id)
-                        .id(group.id)
-                        .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
-                        .listRowBackground(
-                            store.selectedGroup?.id == group.id
-                                ? RoundedRectangle(cornerRadius: 8)
-                                    .fill(Color.accentColor.opacity(0.18))
-                                    .padding(.vertical, 1)
-                                : nil
-                        )
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            store.lastGroupMoveDelta = 0  // クリック時はスクロール無効
-                            store.selectedGroup = group
-                            if group.focusedImage == nil {
-                                group.focusedImage = group.images.first
-                            }
-                        }
-                        // 表示されたら visible range を更新
-                        .onAppear  { visibleRange = expandRange(visibleRange, adding: index, total: store.groups.count) }
-                        .onDisappear { visibleRange = shrinkRange(visibleRange, removing: index) }
+            GroupListView()
+                .environmentObject(store)
+
+            Divider()
+
+            // ── ボタン行 ──
+            HStack(spacing: 8) {
+                Button {
+                    store.copyRedGroupIDs()
+                    toast("コピーしました！")
+                } label: {
+                    Label("番号コピー", systemImage: "doc.on.clipboard")
+                        .font(.system(size: 11))
+                        .frame(maxWidth: .infinity)
                 }
-            }
-            .listStyle(.sidebar)
-            .onChange(of: store.selectedGroup?.id) { _ in
-                guard store.lastGroupMoveDelta != 0,
-                      let selectedIndex = store.groups.firstIndex(where: { $0.id == store.selectedGroup?.id }),
-                      !visibleRange.isEmpty else { return }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!hasRedMarked)
 
-                let total   = visibleRange.count
-                let topEdge    = visibleRange.lowerBound + Int(Double(total) * 0.3)
-                let bottomEdge = visibleRange.upperBound - Int(Double(total) * 0.3) - 1
-
-                if store.lastGroupMoveDelta < 0, selectedIndex <= topEdge {
-                    // 上移動 & 上30%ゾーンに入った → 選択行を上30%位置にアンカー
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        proxy.scrollTo(store.groups[selectedIndex].id, anchor: UnitPoint(x: 0.5, y: 0.3))
-                    }
-                } else if store.lastGroupMoveDelta > 0, selectedIndex >= bottomEdge {
-                    // 下移動 & 下30%ゾーンに入った → 選択行を下70%位置にアンカー
-                    withAnimation(.easeInOut(duration: 0.15)) {
-                        proxy.scrollTo(store.groups[selectedIndex].id, anchor: UnitPoint(x: 0.5, y: 0.7))
-                    }
+                Button {
+                    presentMovePanel()
+                } label: {
+                    Label("一括移動", systemImage: "folder.badge.plus")
+                        .font(.system(size: 11))
+                        .frame(maxWidth: .infinity)
                 }
-                // ゾーン内にいる間は scrollTo しない → カーソルだけ動く
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(!hasRedMarked)
             }
-        } // ScrollViewReader
-        
-        Divider()
+            .padding(.horizontal, 10)
+            .padding(.top, 6)
 
-        // ── ボタン行 ──
-        HStack(spacing: 8) {
-            // 番号コピーボタン
-            Button {
-                store.copyRedGroupIDs()
-                toast("コピーしました！")
-            } label: {
-                Label("番号コピー", systemImage: "doc.on.clipboard")
-                    .font(.system(size: 11))
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .disabled(store.groups.filter { $0.hasRedMark }.isEmpty)
-
-            // 一括移動ボタン
-            Button {
-                presentMovePanel()
-            } label: {
-                Label("一括移動", systemImage: "folder.badge.plus")
-                    .font(.system(size: 11))
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .disabled(store.groups.filter { $0.hasRedMark }.isEmpty)
+            ProgressFooter(groups: store.groups)
         }
-        .padding(.horizontal, 10)
-        .padding(.top, 6)
-
-        ProgressFooter(groups: store.groups)
-        } // VStack
         .toast(isShowing: $showToast, message: toastMessage)
-    }
-
-    // MARK: - Scroll helpers
-
-    /// onAppear で呼ばれるたびに visible range を広げる
-    private func expandRange(_ range: Range<Int>, adding index: Int, total: Int) -> Range<Int> {
-        if range.isEmpty { return index..<(index + 1) }
-        let lo = min(range.lowerBound, index)
-        let hi = max(range.upperBound, index + 1)
-        return lo..<hi
-    }
-
-    /// onDisappear で呼ばれるたびに端を縮める
-    private func shrinkRange(_ range: Range<Int>, removing index: Int) -> Range<Int> {
-        guard !range.isEmpty else { return range }
-        if index == range.lowerBound { return (range.lowerBound + 1)..<range.upperBound }
-        if index == range.upperBound - 1 { return range.lowerBound..<(range.upperBound - 1) }
-        return range
     }
 
     private func toast(_ message: String) {
@@ -139,6 +72,95 @@ struct SidebarView: View {
     }
 }
 
+// MARK: - グループリスト（切り出し）
+
+private struct GroupListView: View {
+    @EnvironmentObject var store: ImageStore
+    @State private var visibleRange: Range<Int> = 0..<0
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            List {
+                ForEach(Array(store.groups.enumerated()), id: \.element.id) { index, group in
+                    GroupRow(group: group, isSelected: store.selectedGroup?.id == group.id)
+                        .id(group.id)
+                        .listRowInsets(EdgeInsets(top: 2, leading: 6, bottom: 2, trailing: 6))
+                        .listRowBackground(rowBackground(for: group))
+                        .contentShape(Rectangle())
+                        .onTapGesture { handleTap(group: group) }
+                        .onAppear  { visibleRange = expandRange(visibleRange, adding: index, total: store.groups.count) }
+                        .onDisappear { visibleRange = shrinkRange(visibleRange, removing: index) }
+                }
+            }
+            .listStyle(.sidebar)
+            .overlay(focusBorder)
+            .onTapGesture { store.activePanel = .group }
+            .onChange(of: store.selectedGroup?.id) { _ in
+                scrollIfNeeded(proxy: proxy)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func rowBackground(for group: ImageGroup) -> some View {
+        if store.selectedGroup?.id == group.id {
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.accentColor.opacity(0.18))
+                .padding(.vertical, 1)
+        }
+    }
+
+    private var focusBorder: some View {
+        RoundedRectangle(cornerRadius: 6)
+            .stroke(store.activePanel == .group ? Color.accentColor : Color.clear, lineWidth: 2)
+            .padding(1)
+            .allowsHitTesting(false)
+    }
+
+    private func handleTap(group: ImageGroup) {
+        store.lastGroupMoveDelta = 0
+        store.activePanel = .group
+        store.selectedGroup = group
+        if group.focusedImage == nil {
+            group.focusedImage = group.images.first
+        }
+    }
+
+    private func scrollIfNeeded(proxy: ScrollViewProxy) {
+        guard store.lastGroupMoveDelta != 0,
+              let selectedIndex = store.groups.firstIndex(where: { $0.id == store.selectedGroup?.id }),
+              !visibleRange.isEmpty else { return }
+
+        let total = visibleRange.count
+        let topEdge    = visibleRange.lowerBound + Int(Double(total) * 0.3)
+        let bottomEdge = visibleRange.upperBound - Int(Double(total) * 0.3) - 1
+
+        if store.lastGroupMoveDelta < 0, selectedIndex <= topEdge {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                proxy.scrollTo(store.groups[selectedIndex].id, anchor: UnitPoint(x: 0.5, y: 0.3))
+            }
+        } else if store.lastGroupMoveDelta > 0, selectedIndex >= bottomEdge {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                proxy.scrollTo(store.groups[selectedIndex].id, anchor: UnitPoint(x: 0.5, y: 0.7))
+            }
+        }
+    }
+
+    private func expandRange(_ range: Range<Int>, adding index: Int, total: Int) -> Range<Int> {
+        if range.isEmpty { return index..<(index + 1) }
+        return min(range.lowerBound, index)..<max(range.upperBound, index + 1)
+    }
+
+    private func shrinkRange(_ range: Range<Int>, removing index: Int) -> Range<Int> {
+        guard !range.isEmpty else { return range }
+        if index == range.lowerBound { return (range.lowerBound + 1)..<range.upperBound }
+        if index == range.upperBound - 1 { return range.lowerBound..<(range.upperBound - 1) }
+        return range
+    }
+}
+
+// MARK: - グループ行
+
 private struct GroupRow: View {
     @ObservedObject var group: ImageGroup
     let isSelected: Bool
@@ -147,7 +169,6 @@ private struct GroupRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            // 赤マーク数バッジ
             ZStack {
                 RoundedRectangle(cornerRadius: 5)
                     .fill(redCount > 0 ? Color.red : Color.clear)
@@ -185,10 +206,9 @@ private struct GroupRow: View {
 private struct ProgressFooter: View {
     let groups: [ImageGroup]
 
-    // tick を実際の集計に使うことで再描画を確実にトリガー
-    @State private var redCount = 0      // 赤マーク画像数
-    @State private var markedGroups = 0   // 赤マークありグループ数
-    @State private var totalGroups = 0    // 全グループ数
+    @State private var redCount = 0
+    @State private var markedGroups = 0
+    @State private var totalGroups = 0
 
     var percent: Int {
         guard totalGroups > 0 else { return 0 }
@@ -197,11 +217,9 @@ private struct ProgressFooter: View {
 
     var body: some View {
         VStack(spacing: 6) {
-            // プログレスバー
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(Color.secondary.opacity(0.2))
+                    RoundedRectangle(cornerRadius: 3).fill(Color.secondary.opacity(0.2))
                     RoundedRectangle(cornerRadius: 3)
                         .fill(Color.red.opacity(0.75))
                         .frame(width: totalGroups > 0
@@ -212,7 +230,6 @@ private struct ProgressFooter: View {
             }
             .frame(height: 5)
 
-            // テキスト
             HStack(alignment: .bottom) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("\(markedGroups) / \(totalGroups) グループ")
@@ -232,18 +249,15 @@ private struct ProgressFooter: View {
         .padding(.vertical, 8)
         .background(Color(NSColor.windowBackgroundColor))
         .onAppear { recalculate() }
-        // 各グループの変更を購読 → 直接集計し直す
         .onReceive(
             Publishers.MergeMany(groups.map { $0.objectWillChange.map { _ in () }.eraseToAnyPublisher() })
-        ) { _ in
-            recalculate()
-        }
+        ) { _ in recalculate() }
     }
 
     private func recalculate() {
         let allImages = groups.flatMap { $0.images }
-        redCount      = allImages.filter { $0.mark == .red }.count
-        markedGroups  = groups.filter { $0.hasRedMark }.count
-        totalGroups   = groups.count
+        redCount     = allImages.filter { $0.mark == .red }.count
+        markedGroups = groups.filter { $0.hasRedMark }.count
+        totalGroups  = groups.count
     }
 }
