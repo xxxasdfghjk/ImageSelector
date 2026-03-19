@@ -76,7 +76,7 @@ struct SidebarView: View {
 
 private struct GroupListView: View {
     @EnvironmentObject var store: ImageStore
-    @State private var visibleRange: Range<Int> = 0..<0
+    @State private var listHeight: CGFloat = 0
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -88,12 +88,16 @@ private struct GroupListView: View {
                         .listRowBackground(rowBackground(for: group))
                         .contentShape(Rectangle())
                         .onTapGesture { handleTap(group: group) }
-                        .onAppear  { visibleRange = expandRange(visibleRange, adding: index, total: store.groups.count) }
-                        .onDisappear { visibleRange = shrinkRange(visibleRange, removing: index) }
                 }
             }
             .listStyle(.sidebar)
             .overlay(focusBorder)
+            .overlay(
+                GeometryReader { geo in
+                    Color.clear.onAppear { listHeight = geo.size.height }
+                        .onChange(of: geo.size.height) { listHeight = $0 }
+                }
+            )
             .onTapGesture { store.activePanel = .group }
             .onChange(of: store.selectedGroup?.id) { _ in
                 scrollIfNeeded(proxy: proxy)
@@ -129,35 +133,29 @@ private struct GroupListView: View {
     private func scrollIfNeeded(proxy: ScrollViewProxy) {
         let delta = store.lastGroupMoveDelta
         guard delta != 0,
-              let selectedIndex = store.groups.firstIndex(where: { $0.id == store.selectedGroup?.id }),
-              !visibleRange.isEmpty else { return }
+              let selectedIndex = store.groups.firstIndex(where: { $0.id == store.selectedGroup?.id })
+        else { return }
 
-        let total      = visibleRange.count
-        let topEdge    = visibleRange.lowerBound + Int(Double(total) * 0.3)
-        let bottomEdge = visibleRange.upperBound - Int(Double(total) * 0.3) - 1
+        // 1行あたりの高さを概算（行の実測が難しいためRowの実装から推算）
+        let rowHeight: CGFloat = 36
+        let visibleCount = max(1, Int(listHeight / rowHeight))
 
-        if delta < 0, selectedIndex <= topEdge {
+        // スクロール発動のしきい値（上下30%）
+        let triggerZone = max(1, Int(Double(visibleCount) * 0.3))
+
+        if delta < 0 {
+            // 上移動: selectedIndex が上端から triggerZone 以内に入ったらスクロール
             withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
                 proxy.scrollTo(store.groups[selectedIndex].id, anchor: UnitPoint(x: 0.5, y: 0.3))
             }
-        } else if delta > 0, selectedIndex >= bottomEdge {
+        } else {
+            // 下移動: selectedIndex が下端から triggerZone 以内に入ったらスクロール
             withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
                 proxy.scrollTo(store.groups[selectedIndex].id, anchor: UnitPoint(x: 0.5, y: 0.7))
             }
         }
     }
 
-    private func expandRange(_ range: Range<Int>, adding index: Int, total: Int) -> Range<Int> {
-        if range.isEmpty { return index..<(index + 1) }
-        return min(range.lowerBound, index)..<max(range.upperBound, index + 1)
-    }
-
-    private func shrinkRange(_ range: Range<Int>, removing index: Int) -> Range<Int> {
-        guard !range.isEmpty else { return range }
-        if index == range.lowerBound { return (range.lowerBound + 1)..<range.upperBound }
-        if index == range.upperBound - 1 { return range.lowerBound..<(range.upperBound - 1) }
-        return range
-    }
 }
 
 // MARK: - グループ行
