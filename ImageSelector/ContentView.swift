@@ -5,6 +5,7 @@ struct ContentView: View {
     @EnvironmentObject var store: ImageStore
     @State private var selectedFolder: URL?
     @State private var rootNodes: [FolderNode] = []
+    @State private var restoreCancellable: AnyCancellable?
 
     var body: some View {
         NavigationSplitView {
@@ -58,15 +59,84 @@ struct ContentView: View {
             }
         }
         .onAppear {
-            loadDefaultRoot()
+            restoreOrLoadDefault()
         }
         .background(
             TabKeyMonitor { store.togglePanel() }
         )
+        .onDisappear { saveSession() }
+        .onReceive(NotificationCenter.default.publisher(for: .saveSession)) { _ in
+            saveSession()
+        }
 
     }
 
     // MARK: - 初期ルート（~/Downloads）
+
+    // MARK: - セッション復元
+
+    private func restoreOrLoadDefault() {
+        if let url = SessionStore.restoreRoot() {
+            // 前回のルートを復元
+            restoreSession(rootURL: url)
+        } else {
+            loadDefaultRoot()
+        }
+    }
+
+    private func restoreSession(rootURL: URL) {
+        let imageFolderURL = SessionStore.restoreSelectedFolder()
+        let expandedPaths  = SessionStore.restoreExpanded()
+        let prevGroupID    = SessionStore.restoreSelectedGroupID()
+
+        print("[Restore] rootURL=\(rootURL.path)")
+        print("[Restore] imageFolderURL=\(imageFolderURL?.path ?? "nil")")
+        print("[Restore] prevGroupID=\(prevGroupID ?? "nil")")
+
+        // 1. ツリーを構築・展開
+        let node = FolderNode(url: rootURL)
+        rootNodes = [node]
+        node.restoreExpanded(paths: expandedPaths) {
+            print("[Restore] restoreExpanded done → selectedFolder=\(imageFolderURL?.lastPathComponent ?? "nil")")
+            self.selectedFolder = imageFolderURL
+            self.store.activePanel = .folder
+        }
+
+        // 2. 画像フォルダがあればロード、なければ何もしない
+        guard let imageURL = imageFolderURL else {
+            print("[Restore] imageFolderURL is nil, skip loadFolder")
+            return
+        }
+        print("[Restore] loadFolder: \(imageURL.path)")
+        store.loadFolder(url: imageURL)
+
+        // 3. store.groups の変化を Combine で1回だけ受け取ってグループ復元
+        var cancellable: AnyCancellable?
+        cancellable = store.$groups
+            .filter { !$0.isEmpty }
+            .first()
+            .receive(on: DispatchQueue.main)
+            .sink { groups in
+                defer { cancellable = nil }
+                guard let id = prevGroupID,
+                      let group = groups.first(where: { $0.id == id }) else { return }
+                self.store.selectedGroup = group
+                group.focusedImage = group.images.first
+                self.store.lastGroupMoveDelta = 1
+            }
+        // cancellable をインスタンス変数で保持
+        self.restoreCancellable = cancellable
+    }
+
+    private func saveSession() {
+        guard let root = rootNodes.first else { return }
+        SessionStore.saveRoot(url: root.url)
+        SessionStore.saveExpanded(urls: root.collectExpanded())
+        // 選択中フォルダも保存（loadFolder 経由で保存済みのはずだが念のため）
+        if let folder = selectedFolder {
+            SessionStore.saveSelectedFolder(url: folder)
+        }
+    }
 
     private func loadDefaultRoot() {
         let downloads = FileManager.default.homeDirectoryForCurrentUser
