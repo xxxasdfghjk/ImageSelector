@@ -154,7 +154,8 @@ class ImageStore: ObservableObject {
         let images = group.images
         guard !images.isEmpty else { return }
         let current = group.focusedImage.flatMap { images.firstIndex(of: $0) } ?? 0
-        let next = max(0, min(images.count - 1, current + delta))
+        // 端でラップアラウンド
+        let next = (current + delta + images.count) % images.count
         group.focusedImage = images[next]
     }
 

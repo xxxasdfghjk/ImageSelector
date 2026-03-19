@@ -1,36 +1,66 @@
 import AppKit
 import ImageIO
 
-/// サムネイル・プレビュー画像をメモリにキャッシュするシングルトン
-/// ImageIO でダウンサイズしながら読み込むので、フル解像度を展開しない
 final class ImageCache {
     static let shared = ImageCache()
 
-    // サムネイル用（100×100相当）
     private let thumbCache = NSCache<NSURL, NSImage>()
-    // プレビュー用（1200px相当）
     private let previewCache = NSCache<NSURL, NSImage>()
 
-    private let queue = DispatchQueue(label: "ImageCache", qos: .userInitiated, attributes: .concurrent)
+    // サムネイル用: 並列数を制限してI/Oを詰まらせない
+    private let thumbQueue = DispatchQueue(
+        label: "ImageCache.thumb",
+        qos: .userInteractive,
+        attributes: .concurrent
+    )
+    private let previewQueue = DispatchQueue(
+        label: "ImageCache.preview",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
+    // 同じURLへの重複リクエストを防ぐセット
+    private var inFlight = Set<URL>()
+    private let inFlightLock = NSLock()
 
     private init() {
-        thumbCache.countLimit = 500        // 最大500枚
-        previewCache.countLimit = 30       // プレビューは重いので少なめ
-        thumbCache.totalCostLimit   = 100 * 1024 * 1024  // 100MB
-        previewCache.totalCostLimit = 300 * 1024 * 1024  // 300MB
+        thumbCache.countLimit = 800
+        previewCache.countLimit = 40
+        thumbCache.totalCostLimit   = 150 * 1024 * 1024
+        previewCache.totalCostLimit = 400 * 1024 * 1024
     }
 
-    // MARK: - サムネイル（同期・キャッシュ済みならすぐ返る）
+    // MARK: - サムネイル（非同期）
 
-    func thumbnail(for url: URL) -> NSImage? {
+    func thumbnail(for url: URL, completion: @escaping (NSImage?) -> Void) {
         let key = url as NSURL
-        if let cached = thumbCache.object(forKey: key) { return cached }
-        guard let img = loadImage(url: url, maxPixelSize: 200) else { return nil }
-        thumbCache.setObject(img, forKey: key)
-        return img
+
+        // キャッシュヒット → 即返す
+        if let cached = thumbCache.object(forKey: key) {
+            completion(cached)
+            return
+        }
+
+        // 重複リクエスト防止
+        inFlightLock.lock()
+        let alreadyLoading = inFlight.contains(url)
+        if !alreadyLoading { inFlight.insert(url) }
+        inFlightLock.unlock()
+        guard !alreadyLoading else { return }
+
+        thumbQueue.async { [weak self] in
+            guard let self else { return }
+            let img = self.loadImage(url: url, maxPixelSize: 200)
+            if let img {
+                self.thumbCache.setObject(img, forKey: key)
+            }
+            self.inFlightLock.lock()
+            self.inFlight.remove(url)
+            self.inFlightLock.unlock()
+            DispatchQueue.main.async { completion(img) }
+        }
     }
 
-    // MARK: - プレビュー（非同期・完了後にコールバック）
+    // MARK: - プレビュー（非同期）
 
     func preview(for url: URL, completion: @escaping (NSImage?) -> Void) {
         let key = url as NSURL
@@ -38,22 +68,27 @@ final class ImageCache {
             completion(cached)
             return
         }
-        queue.async {
+        previewQueue.async { [weak self] in
+            guard let self else { return }
             let img = self.loadImage(url: url, maxPixelSize: 1600)
-            if let img {
-                self.previewCache.setObject(img, forKey: key)
-            }
+            if let img { self.previewCache.setObject(img, forKey: key) }
             DispatchQueue.main.async { completion(img) }
         }
     }
 
-    // MARK: - プリフェッチ（バックグラウンドで先読み）
+    // MARK: - プリフェッチ（並列）
 
     func prefetch(urls: [URL]) {
-        queue.async {
-            for url in urls {
-                let key = url as NSURL
-                guard self.thumbCache.object(forKey: key) == nil else { continue }
+        // DispatchGroup で並列ロード（最大8並列）
+        let semaphore = DispatchSemaphore(value: 8)
+        for url in urls {
+            let key = url as NSURL
+            guard thumbCache.object(forKey: key) == nil else { continue }
+            thumbQueue.async { [weak self] in
+                semaphore.wait()
+                defer { semaphore.signal() }
+                guard let self else { return }
+                guard self.thumbCache.object(forKey: key) == nil else { return }
                 if let img = self.loadImage(url: url, maxPixelSize: 200) {
                     self.thumbCache.setObject(img, forKey: key)
                 }
@@ -65,7 +100,7 @@ final class ImageCache {
         previewCache.removeObject(forKey: url as NSURL)
     }
 
-    // MARK: - ImageIO でダウンサイズ読み込み
+    // MARK: - ImageIO ダウンサイズ読み込み
 
     private func loadImage(url: URL, maxPixelSize: Int) -> NSImage? {
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }

@@ -195,6 +195,12 @@ private struct GroupRow: View {
             }
 
             Spacer()
+
+            // 画像枚数
+            Text("\(group.images.count)")
+                .font(.system(size: 10, weight: .regular))
+                .foregroundColor(isSelected ? .accentColor.opacity(0.7) : .secondary)
+                .monospacedDigit()
         }
         .padding(.vertical, 3)
         .padding(.horizontal, 4)
