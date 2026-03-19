@@ -36,10 +36,7 @@ struct FolderTreeView: View {
                     }
                 )
             )
-            // グループリスト側で上下キーが押されたら（moveGroup経由でdeltaが変わる）フォーカスを外す
-            .onChange(of: store.lastGroupMoveDelta) { delta in
-                if delta != 0 { store.activePanel = .group }
-            }
+
         }
     }
 }
@@ -51,7 +48,6 @@ private struct FolderKeyMonitor: NSViewRepresentable {
     var isActive: Bool
     @Binding var selectedFolder: URL?
     var onSelect: (URL) -> Void
-
     func makeNSView(context: Context) -> NSView { NSView() }
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.roots = roots
@@ -95,9 +91,11 @@ private struct FolderKeyMonitor: NSViewRepresentable {
                 // ここでは特別処理：Tab は素通しにして ContentView で拾う
                 return event
             case 125: // ↓
-                move(by: +1, in: flat); return nil
+                move(by: +1, in: flat)
+                return nil
             case 126: // ↑
-                move(by: -1, in: flat); return nil
+                move(by: -1, in: flat)
+                return nil
             case 124: // → 展開
                 if let node = flat.first(where: { $0.url == selectedFolder.wrappedValue }) {
                     DispatchQueue.main.async {
