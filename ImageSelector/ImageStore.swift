@@ -15,6 +15,7 @@ class ImageStore: ObservableObject {
     private let watcher = FolderWatcher()
     @Published var lastGroupMoveDelta: Int = 1  // 最後の移動方向（正=下、負=上）
     @Published var activePanel: ActivePanel = .folder  // フォーカス中のパネル
+    @Published var isSearchActive: Bool = false  // 検索窓が開いているか
 
     // MARK: - フォルダ読み込み
 

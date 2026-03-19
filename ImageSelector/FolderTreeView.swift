@@ -5,6 +5,7 @@ struct FolderTreeView: View {
     @EnvironmentObject var store: ImageStore
     let roots: [FolderNode]
     @Binding var selectedFolder: URL?
+    var searchActive: Bool = false
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -26,7 +27,7 @@ struct FolderTreeView: View {
             .background(
                 FolderKeyMonitor(
                     roots: roots,
-                    isActive: store.activePanel == .folder,
+                    isActive: store.activePanel == .folder && !searchActive,
                     selectedFolder: $selectedFolder,
                     onSelect: { url in
                         selectedFolder = url

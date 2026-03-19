@@ -111,8 +111,8 @@ struct ImageGridView: View {
 
     // true を返すとイベントを消費（ビープなし）、false で素通し
     private func handleKeyEvent(_ event: NSEvent) -> Bool {
-        // フォルダツリーがアクティブなときは全キーを素通し
-        guard store.activePanel != .folder else { return false }
+        // フォルダツリーがアクティブ、または検索窓が開いているときは素通し
+        guard store.activePanel != .folder, !store.isSearchActive else { return false }
 
         // Cmd+Shift+C: 赤マーク済みグループIDをクリップボードへ
         let cmdShift: NSEvent.ModifierFlags = [.shift, .command]

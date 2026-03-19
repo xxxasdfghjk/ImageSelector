@@ -6,12 +6,14 @@ struct ContentView: View {
     @State private var selectedFolder: URL?
     @State private var rootNodes: [FolderNode] = []
     @State private var restoreCancellable: AnyCancellable?
+    @State private var showFolderSearch = false
+    @State private var lastShiftTime: Date = .distantPast
 
     var body: some View {
         NavigationSplitView {
             // ── カラム1: フォルダツリー ──
             VStack(spacing: 0) {
-                FolderTreeView(roots: rootNodes, selectedFolder: $selectedFolder)
+                FolderTreeView(roots: rootNodes, selectedFolder: $selectedFolder, searchActive: showFolderSearch)
                     .environmentObject(store)
 
                 Divider()
@@ -61,12 +63,47 @@ struct ContentView: View {
         .onAppear {
             restoreOrLoadDefault()
         }
+        .overlay {
+            if showFolderSearch {
+                ZStack {
+                    // 背景タップで閉じる
+                    Color.black.opacity(0.3)
+                        .ignoresSafeArea()
+                        .onTapGesture { showFolderSearch = false }
+
+                    VStack {
+                        Spacer().frame(height: 80)
+                        FolderSearchView(
+                            isPresented: $showFolderSearch,
+                            rootNodes: rootNodes
+                        ) { node in
+                            selectedFolder = node.url
+                            store.loadFolder(url: node.url)
+                            store.activePanel = .folder
+                            // ツリーを展開してその行にスクロール
+                            expandToNode(node)
+                        }
+                        Spacer()
+                    }
+                }
+                .transition(.opacity)
+                .animation(.easeInOut(duration: 0.15), value: showFolderSearch)
+            }
+        }
         .background(
             TabKeyMonitor { store.togglePanel() }
+        )
+        .background(
+            ShiftDoubleMonitor(lastShiftTime: $lastShiftTime) {
+                showFolderSearch = true
+            }
         )
         .onDisappear { saveSession() }
         .onReceive(NotificationCenter.default.publisher(for: .saveSession)) { _ in
             saveSession()
+        }
+        .onChange(of: showFolderSearch) { active in
+            store.isSearchActive = active
         }
 
     }
@@ -126,6 +163,37 @@ struct ContentView: View {
             }
         // cancellable をインスタンス変数で保持
         self.restoreCancellable = cancellable
+    }
+
+    private func expandToNode(_ target: FolderNode) {
+        // ターゲットのパスの各祖先ノードを展開する
+        func expand(nodes: [FolderNode], path: [String]) -> Bool {
+            guard !path.isEmpty else { return false }
+            for node in nodes {
+                if node.url.path == path[0] {
+                    if path.count == 1 { return true }
+                    node.isExpanded = true
+                    node.loadChildren()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                        _ = expand(nodes: node.children ?? [], path: Array(path.dropFirst()))
+                    }
+                    return true
+                }
+            }
+            return false
+        }
+        // ターゲットまでのパス成分を構築
+        let targetPath = target.url.path
+        let rootPath = rootNodes.first?.url.path ?? ""
+        guard targetPath.hasPrefix(rootPath) else { return }
+        let relative = String(targetPath.dropFirst(rootPath.count))
+        var components = [rootPath]
+        var current = rootPath
+        for part in relative.split(separator: "/") {
+            current += "/" + part
+            components.append(current)
+        }
+        _ = expand(nodes: rootNodes, path: components)
     }
 
     private func saveSession() {
@@ -205,6 +273,51 @@ private struct TabKeyMonitor: NSViewRepresentable {
                 if event.keyCode == 48 && event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty {
                     self?.onTab()
                     return nil
+                }
+                return event
+            }
+        }
+        deinit { if let m = monitor { NSEvent.removeMonitor(m) } }
+    }
+}
+
+// MARK: - Shift 二連打検出
+
+private struct ShiftDoubleMonitor: NSViewRepresentable {
+    @Binding var lastShiftTime: Date
+    var onDoubleShift: () -> Void
+
+    func makeNSView(context: Context) -> NSView { NSView() }
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.lastShiftTime = _lastShiftTime
+        context.coordinator.onDoubleShift = onDoubleShift
+    }
+    func makeCoordinator() -> Coordinator {
+        Coordinator(lastShiftTime: _lastShiftTime, onDoubleShift: onDoubleShift)
+    }
+
+    class Coordinator {
+        var lastShiftTime: Binding<Date>
+        var onDoubleShift: () -> Void
+        var monitor: Any?
+
+        init(lastShiftTime: Binding<Date>, onDoubleShift: @escaping () -> Void) {
+            self.lastShiftTime = lastShiftTime
+            self.onDoubleShift = onDoubleShift
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+                guard let self else { return event }
+                // Shift キーが押された瞬間（離した瞬間ではなく）
+                let shiftPressed = event.modifierFlags.contains(.shift)
+                guard shiftPressed else { return event }
+
+                let now = Date()
+                let interval = now.timeIntervalSince(self.lastShiftTime.wrappedValue)
+                if interval < 0.4 {
+                    // 0.4秒以内に2回押された
+                    DispatchQueue.main.async { self.onDoubleShift() }
+                    self.lastShiftTime.wrappedValue = .distantPast  // リセット
+                } else {
+                    self.lastShiftTime.wrappedValue = now
                 }
                 return event
             }
