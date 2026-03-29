@@ -27,7 +27,6 @@ final class FolderNode: ObservableObject, Identifiable {
         }
         let fm = FileManager.default
 
-        // contentsOfDirectory の生の結果とエラーを確認
         do {
             let contents = try fm.contentsOfDirectory(
                 at: url,
@@ -55,6 +54,79 @@ final class FolderNode: ObservableObject, Identifiable {
                 self.children = []
                 if expandAfterLoad { self.isExpanded = true }
             }
+        }
+    }
+
+    // MARK: - 再スキャン
+
+    /// ツリー全体を再スキャンして新規フォルダを追加する（読み込み済みのノードのみ対象）
+    /// - Parameter completion: メインスレッドで呼ばれる完了コールバック。追加されたフォルダ数を渡す。
+    func rescan(completion: @escaping (Int) -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            var addedCount = 0
+            self.rescanRecursive(added: &addedCount)
+            DispatchQueue.main.async {
+                completion(addedCount)
+            }
+        }
+    }
+
+    /// 再帰的にスキャン（バックグラウンドスレッドで呼ぶこと）
+    private func rescanRecursive(added: inout Int) {
+        let fm = FileManager.default
+
+        guard let currentChildren = children else {
+            // まだ一度も展開されていないノードはスキップ
+            return
+        }
+
+        // 現在のディスク上のサブフォルダ一覧を取得
+        guard let contents = try? fm.contentsOfDirectory(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+
+        let diskDirs = contents
+            .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+            .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+
+        // 既存の子URLセット
+        let existingURLs = Set(currentChildren.map { $0.url })
+
+        // 新規フォルダを検出
+        let newDirs = diskDirs.filter { !existingURLs.contains($0) }
+
+        if !newDirs.isEmpty {
+            let newNodes = newDirs.map { FolderNode(url: $0) }
+            added += newNodes.count
+
+            DispatchQueue.main.sync {
+                var merged = currentChildren + newNodes
+                merged.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+                self.children = merged
+            }
+        }
+
+        // 削除されたフォルダを除去
+        let diskURLSet = Set(diskDirs.map { $0 })
+        let removedURLs = existingURLs.subtracting(diskURLSet)
+        if !removedURLs.isEmpty {
+            DispatchQueue.main.sync {
+                self.children = self.children?.filter { !removedURLs.contains($0.url) }
+            }
+        }
+
+        // 既存の子を再帰的にスキャン（展開済みのみ）
+        // ※ main.sync 後に children を再取得してイテレート
+        let latestChildren: [FolderNode] = {
+            var result: [FolderNode] = []
+            DispatchQueue.main.sync { result = self.children ?? [] }
+            return result
+        }()
+
+        for child in latestChildren {
+            child.rescanRecursive(added: &added)
         }
     }
 

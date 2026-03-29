@@ -9,6 +9,10 @@ struct ContentView: View {
     @State private var showFolderSearch = false
     @State private var lastShiftTime: Date = .distantPast
 
+    // トースト（Rキーリスキャン用）
+    @State private var showRescanToast = false
+    @State private var rescanToastMessage = ""
+
     var body: some View {
         NavigationSplitView {
             // ── カラム1: フォルダツリー ──
@@ -36,7 +40,7 @@ struct ContentView: View {
             .navigationSplitViewColumnWidth(min: 180, ideal: 220)
 
         } content: {
-            // ── カラム2: グループリスト（既存 SidebarView）──
+            // ── カラム2: グループリスト / モード切替 ──
             SidebarView()
                 .environmentObject(store)
                 .overlay(
@@ -46,17 +50,21 @@ struct ContentView: View {
                 .navigationSplitViewColumnWidth(min: 160, ideal: 200)
 
         } detail: {
-            // ── カラム3: 画像グリッド ──
-            if let group = store.selectedGroup {
-                ImageGridView(group: group)
-                    .environmentObject(store)
-            } else {
-                VStack(spacing: 12) {
-                    Image(systemName: "photo.on.rectangle.angled")
-                        .font(.system(size: 48))
-                        .foregroundColor(.secondary)
-                    Text("フォルダを選択してください")
-                        .foregroundColor(.secondary)
+            // ── カラム3: 画像表示エリア（モードは SidebarView のセグメントで切替）──
+            switch store.viewMode {
+            case .group:
+                if let group = store.selectedGroup {
+                    ImageGridView(group: group)
+                        .environmentObject(store)
+                } else {
+                    emptyPlaceholder
+                }
+            case .list:
+                if store.groups.isEmpty {
+                    emptyPlaceholder
+                } else {
+                    ImageListView()
+                        .environmentObject(store)
                 }
             }
         }
@@ -66,7 +74,6 @@ struct ContentView: View {
         .overlay {
             if showFolderSearch {
                 ZStack {
-                    // 背景タップで閉じる
                     Color.black.opacity(0.3)
                         .ignoresSafeArea()
                         .onTapGesture { showFolderSearch = false }
@@ -80,7 +87,6 @@ struct ContentView: View {
                             selectedFolder = node.url
                             store.loadFolder(url: node.url)
                             store.activePanel = .folder
-                            // ツリーを展開してその行にスクロール
                             expandToNode(node)
                         }
                         Spacer()
@@ -90,31 +96,59 @@ struct ContentView: View {
                 .animation(.easeInOut(duration: 0.15), value: showFolderSearch)
             }
         }
-        .background(
-            TabKeyMonitor { store.togglePanel() }
-        )
-        .background(
-            ShiftDoubleMonitor(lastShiftTime: $lastShiftTime) {
-                showFolderSearch = true
+        // リスキャン完了トースト
+        .overlay(alignment: .bottom) {
+            if showRescanToast {
+                Text(rescanToastMessage)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(Capsule().fill(Color.black.opacity(0.75)))
+                    .padding(.bottom, 24)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
-        )
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: showRescanToast)
+        .background(TabKeyMonitor { store.togglePanel() })
+        .background(ShiftDoubleMonitor(lastShiftTime: $lastShiftTime) { showFolderSearch = true })
+        .background(RescanKeyMonitor { rescanFolderTree() })
         .onDisappear { saveSession() }
-        .onReceive(NotificationCenter.default.publisher(for: .saveSession)) { _ in
-            saveSession()
-        }
-        .onChange(of: showFolderSearch) { active in
-            store.isSearchActive = active
-        }
-
+        .onReceive(NotificationCenter.default.publisher(for: .saveSession)) { _ in saveSession() }
+        .onChange(of: showFolderSearch) { active in store.isSearchActive = active }
     }
 
-    // MARK: - 初期ルート（~/Downloads）
+    // MARK: - 空プレースホルダー
+
+    private var emptyPlaceholder: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "photo.on.rectangle.angled")
+                .font(.system(size: 48))
+                .foregroundColor(.secondary)
+            Text("フォルダを選択してください")
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    // MARK: - フォルダツリー再スキャン（R キー）
+
+    private func rescanFolderTree() {
+        guard !rootNodes.isEmpty else { return }
+        rootNodes[0].rescan { addedCount in
+            let msg = addedCount > 0
+                ? "ツリーを更新しました（\(addedCount)件追加）"
+                : "新規フォルダはありませんでした"
+            rescanToastMessage = msg
+            showRescanToast = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { showRescanToast = false }
+        }
+    }
 
     // MARK: - セッション復元
 
     private func restoreOrLoadDefault() {
         if let url = SessionStore.restoreRoot() {
-            // 前回のルートを復元
             restoreSession(rootURL: url)
         } else {
             loadDefaultRoot()
@@ -126,28 +160,16 @@ struct ContentView: View {
         let expandedPaths  = SessionStore.restoreExpanded()
         let prevGroupID    = SessionStore.restoreSelectedGroupID()
 
-        print("[Restore] rootURL=\(rootURL.path)")
-        print("[Restore] imageFolderURL=\(imageFolderURL?.path ?? "nil")")
-        print("[Restore] prevGroupID=\(prevGroupID ?? "nil")")
-
-        // 1. ツリーを構築・展開
         let node = FolderNode(url: rootURL)
         rootNodes = [node]
         node.restoreExpanded(paths: expandedPaths) {
-            print("[Restore] restoreExpanded done → selectedFolder=\(imageFolderURL?.lastPathComponent ?? "nil")")
             self.selectedFolder = imageFolderURL
             self.store.activePanel = .folder
         }
 
-        // 2. 画像フォルダがあればロード、なければ何もしない
-        guard let imageURL = imageFolderURL else {
-            print("[Restore] imageFolderURL is nil, skip loadFolder")
-            return
-        }
-        print("[Restore] loadFolder: \(imageURL.path)")
+        guard let imageURL = imageFolderURL else { return }
         store.loadFolder(url: imageURL)
 
-        // 3. store.groups の変化を Combine で1回だけ受け取ってグループ復元
         var cancellable: AnyCancellable?
         cancellable = store.$groups
             .filter { !$0.isEmpty }
@@ -161,12 +183,10 @@ struct ContentView: View {
                 group.focusedImage = group.images.first
                 self.store.lastGroupMoveDelta = 1
             }
-        // cancellable をインスタンス変数で保持
         self.restoreCancellable = cancellable
     }
 
     private func expandToNode(_ target: FolderNode) {
-        // ターゲットのパスの各祖先ノードを展開する
         func expand(nodes: [FolderNode], path: [String]) -> Bool {
             guard !path.isEmpty else { return false }
             for node in nodes {
@@ -182,7 +202,6 @@ struct ContentView: View {
             }
             return false
         }
-        // ターゲットまでのパス成分を構築
         let targetPath = target.url.path
         let rootPath = rootNodes.first?.url.path ?? ""
         guard targetPath.hasPrefix(rootPath) else { return }
@@ -200,7 +219,6 @@ struct ContentView: View {
         guard let root = rootNodes.first else { return }
         SessionStore.saveRoot(url: root.url)
         SessionStore.saveExpanded(urls: root.collectExpanded())
-        // 選択中フォルダも保存（loadFolder 経由で保存済みのはずだが念のため）
         if let folder = selectedFolder {
             SessionStore.saveSelectedFolder(url: folder)
         }
@@ -209,10 +227,6 @@ struct ContentView: View {
     private func loadDefaultRoot() {
         let downloads = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Downloads")
-
-        // NSOpenPanel で必ずユーザーに選択させる。
-        // これがmacOSにプライバシー権限を付与させる唯一確実な方法。
-        // Downloadsをあらかじめ選択状態にしておくので「開く」を押すだけでOK。
         let panel = NSOpenPanel()
         panel.message = "開始フォルダを選択してください（そのまま「開く」でDownloadsを使用）"
         panel.prompt = "開く"
@@ -221,14 +235,8 @@ struct ContentView: View {
         panel.canCreateDirectories = false
         panel.directoryURL = downloads
         panel.allowsMultipleSelection = false
-
-        if panel.runModal() == .OK, let url = panel.url {
-            setRoot(url: url)
-        }
-        // キャンセル時は何もしない（空の状態のまま）
+        if panel.runModal() == .OK, let url = panel.url { setRoot(url: url) }
     }
-
-    // MARK: - ルートフォルダ選択
 
     private func selectRootFolder() {
         let panel = NSOpenPanel()
@@ -240,11 +248,9 @@ struct ContentView: View {
     }
 
     private func setRoot(url: URL) {
-        print("[ContentView] setRoot: \(url.path)")
         let node = FolderNode(url: url)
         node.loadChildren(expandAfterLoad: true)
         rootNodes = [node]
-        print("[ContentView] rootNodes set: \(rootNodes.count)件")
         selectedFolder = nil
         store.groups = []
         store.selectedGroup = nil
@@ -255,24 +261,18 @@ struct ContentView: View {
 
 private struct TabKeyMonitor: NSViewRepresentable {
     var onTab: () -> Void
-
     func makeNSView(context: Context) -> NSView { NSView() }
-    func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.onTab = onTab
-    }
+    func updateNSView(_ nsView: NSView, context: Context) { context.coordinator.onTab = onTab }
     func makeCoordinator() -> Coordinator { Coordinator(onTab: onTab) }
 
     class Coordinator {
         var onTab: () -> Void
         var monitor: Any?
-
         init(onTab: @escaping () -> Void) {
             self.onTab = onTab
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-                // keyCode 48 = Tab、修飾キーなし
                 if event.keyCode == 48 && event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty {
-                    self?.onTab()
-                    return nil
+                    self?.onTab(); return nil
                 }
                 return event
             }
@@ -286,38 +286,57 @@ private struct TabKeyMonitor: NSViewRepresentable {
 private struct ShiftDoubleMonitor: NSViewRepresentable {
     @Binding var lastShiftTime: Date
     var onDoubleShift: () -> Void
-
     func makeNSView(context: Context) -> NSView { NSView() }
     func updateNSView(_ nsView: NSView, context: Context) {
         context.coordinator.lastShiftTime = _lastShiftTime
         context.coordinator.onDoubleShift = onDoubleShift
     }
-    func makeCoordinator() -> Coordinator {
-        Coordinator(lastShiftTime: _lastShiftTime, onDoubleShift: onDoubleShift)
-    }
+    func makeCoordinator() -> Coordinator { Coordinator(lastShiftTime: _lastShiftTime, onDoubleShift: onDoubleShift) }
 
     class Coordinator {
         var lastShiftTime: Binding<Date>
         var onDoubleShift: () -> Void
         var monitor: Any?
-
         init(lastShiftTime: Binding<Date>, onDoubleShift: @escaping () -> Void) {
             self.lastShiftTime = lastShiftTime
             self.onDoubleShift = onDoubleShift
             monitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
                 guard let self else { return event }
-                // Shift キーが押された瞬間（離した瞬間ではなく）
-                let shiftPressed = event.modifierFlags.contains(.shift)
-                guard shiftPressed else { return event }
-
+                guard event.modifierFlags.contains(.shift) else { return event }
                 let now = Date()
                 let interval = now.timeIntervalSince(self.lastShiftTime.wrappedValue)
                 if interval < 0.4 {
-                    // 0.4秒以内に2回押された
                     DispatchQueue.main.async { self.onDoubleShift() }
-                    self.lastShiftTime.wrappedValue = .distantPast  // リセット
+                    self.lastShiftTime.wrappedValue = .distantPast
                 } else {
                     self.lastShiftTime.wrappedValue = now
+                }
+                return event
+            }
+        }
+        deinit { if let m = monitor { NSEvent.removeMonitor(m) } }
+    }
+}
+
+// MARK: - R キー: フォルダツリー再スキャン
+
+private struct RescanKeyMonitor: NSViewRepresentable {
+    var onRescan: () -> Void
+    func makeNSView(context: Context) -> NSView { NSView() }
+    func updateNSView(_ nsView: NSView, context: Context) { context.coordinator.onRescan = onRescan }
+    func makeCoordinator() -> Coordinator { Coordinator(onRescan: onRescan) }
+
+    class Coordinator {
+        var onRescan: () -> Void
+        var monitor: Any?
+        init(onRescan: @escaping () -> Void) {
+            self.onRescan = onRescan
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                // keyCode 15 = R、修飾キーなし
+                if event.keyCode == 15 &&
+                   event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty {
+                    DispatchQueue.main.async { self?.onRescan() }
+                    return nil
                 }
                 return event
             }

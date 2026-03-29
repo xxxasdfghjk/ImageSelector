@@ -4,6 +4,9 @@ import Combine
 
 enum ActivePanel { case folder, group }
 
+// MARK: - 表示モード（SidebarView と ContentView で共有）
+enum ViewMode { case group, list }
+
 class ImageStore: ObservableObject {
     @Published var groups: [ImageGroup] = []
     @Published var selectedGroup: ImageGroup? {
@@ -13,18 +16,22 @@ class ImageStore: ObservableObject {
     private var folderURL: URL?
     private var saveCancellable: AnyCancellable?
     private let watcher = FolderWatcher()
-    @Published var lastGroupMoveDelta: Int = 1  // 最後の移動方向（正=下、負=上）
-    @Published var activePanel: ActivePanel = .folder  // フォーカス中のパネル
-    @Published var isSearchActive: Bool = false  // 検索窓が開いているか
+    @Published var lastGroupMoveDelta: Int = 1
+    @Published var activePanel: ActivePanel = .folder
+    @Published var isSearchActive: Bool = false
+
+    /// グループビュー ↔ 一覧ビューの切り替え
+    @Published var viewMode: ViewMode = .group
+
+    // 一覧ビューで選択中のアイテム
+    @Published var listSelectedItem: ImageItem? = nil
 
     // MARK: - フォルダ読み込み
 
     func loadFolder(url: URL, completion: (() -> Void)? = nil) {
-        // 以前のスコープを解放してから新しいフォルダを登録
         folderURL?.stopAccessingSecurityScopedResource()
         _ = url.startAccessingSecurityScopedResource()
         folderURL = url
-        // 選択フォルダを永続化
         SessionStore.saveSelectedFolder(url: url)
 
         let fm = FileManager.default
@@ -35,8 +42,6 @@ class ImageStore: ObservableObject {
 
         let items = files.compactMap { Parser.parse(url: $0) }
         let grouped = Dictionary(grouping: items) { $0.groupId }
-
-        // 保存済みマークを読み込む
         let savedMarks = MarkStore.load(folderURL: url)
 
         let groups = grouped.map { entry -> ImageGroup in
@@ -45,7 +50,6 @@ class ImageStore: ObservableObject {
             let sorted = rawItems
                 .sorted { $0.timestamp < $1.timestamp }
                 .map { item -> ImageItem in
-                    // ファイル名でマークを復元
                     var restored = item
                     if let mark = savedMarks[item.url.lastPathComponent] {
                         restored.mark = mark
@@ -61,24 +65,17 @@ class ImageStore: ObservableObject {
             self.groups = sortedGroups
             self.selectedGroup = sortedGroups.first
             self.selectedGroup?.focusedImage = sortedGroups.first?.images.first
-            // activePanel はここでは変更しない（フォルダツリー側のフォーカスを維持）
-
-            // グループのマーク変更を監視して自動保存
+            self.listSelectedItem = sortedGroups.first?.images.first
             self.observeMarkChanges()
-
-            // フォルダの変化をリアルタイム監視
             self.watcher.start(url: url) { [weak self] in
                 guard let self, let url = self.folderURL else { return }
                 print("[ImageStore] フォルダ変化を検知、リロード: \(url.lastPathComponent)")
                 self.reloadFolder(url: url)
             }
-
-            // ロード完了コールバック
             completion?()
         }
     }
 
-    /// マーク情報を保持したままファイル一覧だけ更新する
     private func reloadFolder(url: URL) {
         let fm = FileManager.default
         guard let files = try? fm.contentsOfDirectory(
@@ -89,7 +86,6 @@ class ImageStore: ObservableObject {
         let grouped = Dictionary(grouping: items) { $0.groupId }
         let savedMarks = MarkStore.load(folderURL: url)
 
-        // 既存マークをメモリから退避
         var existingMarks: [String: ImageMark] = [:]
         for group in groups {
             for item in group.images where item.mark != .none {
@@ -97,11 +93,9 @@ class ImageStore: ObservableObject {
             }
         }
 
-        // 既存グループのIDセット
         let existingIDs = Set(groups.map { $0.id })
         let newIDs = Set(grouped.keys)
 
-        // ① 既存グループは images だけ更新（オブジェクト維持でちらつき防止）
         for group in groups {
             guard let rawItems = grouped[group.id] else { continue }
             let sorted = rawItems
@@ -113,13 +107,11 @@ class ImageStore: ObservableObject {
                         ?? .none
                     return r
                 }
-            // 画像リストに変化があるときだけ更新
             if group.images.map { $0.url } != sorted.map { $0.url } {
                 group.images = sorted
             }
         }
 
-        // ② 追加されたグループだけ末尾に足す
         let addedIDs = newIDs.subtracting(existingIDs)
         let addedGroups: [ImageGroup] = addedIDs.compactMap { key in
             guard let rawItems = grouped[key] else { return nil }
@@ -135,7 +127,6 @@ class ImageStore: ObservableObject {
             return ImageGroup(id: key, images: sorted, prompt: rawItems[0].prompt)
         }
 
-        // ③ 削除されたグループを除去
         let removedIDs = existingIDs.subtracting(newIDs)
 
         if !addedGroups.isEmpty || !removedIDs.isEmpty {
@@ -145,7 +136,6 @@ class ImageStore: ObservableObject {
             groups = updated
         }
 
-        // 選択中グループ・フォーカス画像を維持
         if let prevSelectedID = selectedGroup?.id,
            let still = groups.first(where: { $0.id == prevSelectedID }) {
             selectedGroup = still
@@ -160,18 +150,14 @@ class ImageStore: ObservableObject {
         observeMarkChanges()
     }
 
-    // MARK: - マーク変更の監視と自動保存
+    // MARK: - マーク監視・保存
 
     private func observeMarkChanges() {
-        // 全グループの objectWillChange をマージして監視
         let publishers = groups.map { $0.objectWillChange.map { _ in () }.eraseToAnyPublisher() }
         guard !publishers.isEmpty else { return }
-
         saveCancellable = Publishers.MergeMany(publishers)
             .debounce(for: .milliseconds(300), scheduler: DispatchQueue.main)
-            .sink { [weak self] in
-                self?.saveMarks()
-            }
+            .sink { [weak self] in self?.saveMarks() }
     }
 
     private func saveMarks() {
@@ -192,7 +178,6 @@ class ImageStore: ObservableObject {
         let images = group.images
         guard !images.isEmpty else { return }
         let current = group.focusedImage.flatMap { images.firstIndex(of: $0) } ?? 0
-        // 端でラップアラウンド
         let next = (current + delta + images.count) % images.count
         group.focusedImage = images[next]
     }
@@ -207,30 +192,46 @@ class ImageStore: ObservableObject {
         if selectedGroup?.focusedImage == nil {
             selectedGroup?.focusedImage = selectedGroup?.images.first
         }
-        // 切替先をプリフェッチ
         if let urls = selectedGroup?.images.map({ $0.url }) {
             ImageCache.shared.prefetch(urls: urls)
         }
-        // 次のグループも先読み
         let nextNext = min(next + 1, groups.count - 1)
         if nextNext != next {
             ImageCache.shared.prefetch(urls: groups[nextNext].images.map { $0.url })
         }
     }
+
+    // MARK: - 一覧ビュー: マーク・移動
+
+    /// 一覧ビュー用: listSelectedItem にマークを付ける
+    func setListMark(_ mark: ImageMark) {
+        guard let item = listSelectedItem else { return }
+        guard let group = groups.first(where: { $0.id == item.groupId }) else { return }
+        group.setMark(mark, for: item)
+        // listSelectedItem の mark を同期
+        if let updated = group.images.first(where: { $0.id == item.id }) {
+            listSelectedItem = updated
+        }
+    }
+
+    /// 一覧ビュー用: ソート済みアイテム列の中で delta 移動
+    func moveListItem(by delta: Int, in sortedItems: [ImageItem]) {
+        guard !sortedItems.isEmpty else { return }
+        let current = listSelectedItem.flatMap { sel in
+            sortedItems.firstIndex(where: { $0.id == sel.id })
+        } ?? 0
+        let next = max(0, min(sortedItems.count - 1, current + delta))
+        listSelectedItem = sortedItems[next]
+    }
 }
 
 extension ImageStore {
-    /// 現在のグループより後で、赤マークが1枚もないグループへジャンプ。
-    /// 末尾まで見つからなければ先頭から折り返して探す。
     func jumpToNextUnmarked() {
         guard !groups.isEmpty else { return }
         let current = selectedGroup.flatMap { g in groups.firstIndex(where: { $0.id == g.id }) } ?? 0
         let count = groups.count
-
-        // current+1 から末尾、なければ 0 から current まで探す
         let searchOrder = Array((current + 1 ..< count)) + Array((0 ..< current))
         guard let found = searchOrder.first(where: { !groups[$0].hasRedMark }) else { return }
-
         selectedGroup = groups[found]
         if selectedGroup?.focusedImage == nil {
             selectedGroup?.focusedImage = selectedGroup?.images.first
@@ -239,25 +240,19 @@ extension ImageStore {
 }
 
 extension ImageStore {
-    /// 赤マーク付きファイルを選択フォルダへ移動する
-    /// - Returns: 移動したファイル数（エラー時は nil）
     @discardableResult
     func moveRedMarkedFiles(to destination: URL) -> Int {
         let fm = FileManager.default
         var movedCount = 0
-
-        // 移動先フォルダがなければ作成
         do {
             try fm.createDirectory(at: destination, withIntermediateDirectories: true)
         } catch {
             print("移動先フォルダの作成に失敗:", error)
             return 0
         }
-
         for group in groups {
             for item in group.images where item.mark == .red {
                 var dest = destination.appendingPathComponent(item.url.lastPathComponent)
-                // 同名ファイルが既にあればリネーム
                 if fm.fileExists(atPath: dest.path) {
                     let base = item.url.deletingPathExtension().lastPathComponent
                     let ext  = item.url.pathExtension
@@ -271,23 +266,14 @@ extension ImageStore {
                 }
             }
         }
-
-        // リロードしてUIを更新
-        if let url = folderURL {
-            loadFolder(url: url)
-        }
-
+        if let url = folderURL { loadFolder(url: url) }
         return movedCount
     }
 }
 
 extension ImageStore {
-    /// 赤マーク済みグループIDをカンマ区切りでクリップボードにコピー
     func copyRedGroupIDs() {
-        let ids = groups
-            .filter { $0.hasRedMark }
-            .map { $0.id }
-            .joined(separator: ",")
+        let ids = groups.filter { $0.hasRedMark }.map { $0.id }.joined(separator: ",")
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(ids, forType: .string)
     }

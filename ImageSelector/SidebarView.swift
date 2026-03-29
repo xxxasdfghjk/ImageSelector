@@ -10,40 +10,58 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            GroupListView()
-                .environmentObject(store)
+            // ── モード切替（グループ / 一覧）──
+            Picker("", selection: $store.viewMode) {
+                Label("グループ", systemImage: "square.grid.2x2").tag(ViewMode.group)
+                Label("一覧", systemImage: "list.bullet.rectangle").tag(ViewMode.list)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
 
             Divider()
 
-            // ── ボタン行 ──
-            HStack(spacing: 8) {
-                Button {
-                    store.copyRedGroupIDs()
-                    toast("コピーしました！")
-                } label: {
-                    Label("番号コピー", systemImage: "doc.on.clipboard")
-                        .font(.system(size: 11))
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(!hasRedMarked)
+            // ── グループリスト（グループモード時のみ表示）──
+            if store.viewMode == .group {
+                GroupListView()
+                    .environmentObject(store)
 
-                Button {
-                    presentMovePanel()
-                } label: {
-                    Label("一括移動", systemImage: "folder.badge.plus")
-                        .font(.system(size: 11))
-                        .frame(maxWidth: .infinity)
+                Divider()
+
+                // ── ボタン行 ──
+                HStack(spacing: 8) {
+                    Button {
+                        store.copyRedGroupIDs()
+                        toast("コピーしました！")
+                    } label: {
+                        Label("番号コピー", systemImage: "doc.on.clipboard")
+                            .font(.system(size: 11))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(!hasRedMarked)
+
+                    Button {
+                        presentMovePanel()
+                    } label: {
+                        Label("一括移動", systemImage: "folder.badge.plus")
+                            .font(.system(size: 11))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(!hasRedMarked)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .disabled(!hasRedMarked)
+                .padding(.horizontal, 10)
+                .padding(.top, 6)
+
+                ProgressFooter(groups: store.groups)
+
+            } else {
+                // 一覧モード時はスペースを埋めるだけ
+                Spacer()
             }
-            .padding(.horizontal, 10)
-            .padding(.top, 6)
-
-            ProgressFooter(groups: store.groups)
         }
         .toast(isShowing: $showToast, message: toastMessage)
     }
@@ -72,12 +90,12 @@ struct SidebarView: View {
     }
 }
 
-// MARK: - グループリスト（切り出し）
+// MARK: - グループリスト
 
 private struct GroupListView: View {
     @EnvironmentObject var store: ImageStore
     @State private var listHeight: CGFloat = 0
-    @State private var scrollOffset: Int = 0  // 現在の先頭アイテムのインデックス概算
+    @State private var scrollOffset: Int = 0
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -139,22 +157,18 @@ private struct GroupListView: View {
 
         let rowHeight: CGFloat = 36
         let visibleCount = max(3, Int(listHeight / rowHeight))
-        // デッドゾーン: 上20% / 下20% を超えたときだけスクロール
         let triggerZone = max(1, Int(Double(visibleCount) * 0.2))
 
         if delta < 0 {
-            // 上移動: 選択行が「現在の先頭 + triggerZone」より上に行ったらスクロール
             let topThreshold = scrollOffset + triggerZone
             if selectedIndex < topThreshold {
                 let newTop = max(0, selectedIndex - triggerZone)
-                let anchorIndex = min(newTop + visibleCount - 1, store.groups.count - 1)
                 withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
                     proxy.scrollTo(store.groups[newTop].id, anchor: .top)
                 }
                 scrollOffset = newTop
             }
         } else {
-            // 下移動: 選択行が「現在の末尾 - triggerZone」より下に行ったらスクロール
             let bottomThreshold = scrollOffset + visibleCount - 1 - triggerZone
             if selectedIndex > bottomThreshold {
                 let newTop = max(0, selectedIndex - visibleCount + 1 + triggerZone)
@@ -165,7 +179,6 @@ private struct GroupListView: View {
             }
         }
     }
-
 }
 
 // MARK: - グループ行
@@ -205,7 +218,6 @@ private struct GroupRow: View {
 
             Spacer()
 
-            // 画像枚数
             Text("\(group.images.count)")
                 .font(.system(size: 10, weight: .regular))
                 .foregroundColor(isSelected ? .accentColor.opacity(0.7) : .secondary)
